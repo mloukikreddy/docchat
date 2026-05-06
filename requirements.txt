@@ -13,3 +13,6 @@ pypdf
 python-docx
 python-pptx
 python-multipart
+langchain-google-genai
+langchain-cohere
+duckduckgo-search
