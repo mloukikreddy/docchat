@@ -1,0 +1,221 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>DocChat — Chat with your files</title>
+<style>
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Segoe UI', sans-serif; background: #0f0f1a; color: #e0e0e0; display: flex; height: 100vh; overflow: hidden; }
+
+  /* SIDEBAR */
+  #sidebar { width: 260px; background: #13131f; border-right: 1px solid #1e1e35; display: flex; flex-direction: column; padding: 20px 16px; gap: 16px; }
+  #sidebar h2 { color: #7c83fd; font-size: 1.1rem; }
+  #upload-area { border: 2px dashed #2a2a4a; border-radius: 10px; padding: 20px; text-align: center; cursor: pointer; transition: border-color 0.2s; }
+  #upload-area:hover { border-color: #7c83fd; }
+  #upload-area p { font-size: 0.85rem; color: #666; margin-top: 6px; }
+  #file-input { display: none; }
+  #upload-btn { width: 100%; background: #7c83fd; color: white; border: none; padding: 10px; border-radius: 8px; cursor: pointer; font-size: 0.9rem; font-weight: 600; margin-top: 8px; }
+  #upload-btn:hover { background: #5c63dd; }
+  #upload-btn:disabled { background: #333; cursor: not-allowed; }
+  #file-list { flex: 1; overflow-y: auto; }
+  #file-list h3 { font-size: 0.8rem; color: #555; margin-bottom: 8px; text-transform: uppercase; letter-spacing: 0.05em; }
+  .file-item { background: #1a1a2e; border-radius: 6px; padding: 8px 10px; margin-bottom: 6px; font-size: 0.82rem; display: flex; align-items: center; gap: 8px; }
+  .file-item .icon { font-size: 1rem; }
+  .file-item .name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .file-item .status { font-size: 0.7rem; color: #4caf50; }
+  #new-chat-btn { background: transparent; border: 1px solid #2a2a4a; color: #888; padding: 8px; border-radius: 8px; cursor: pointer; font-size: 0.85rem; }
+  #new-chat-btn:hover { border-color: #7c83fd; color: #7c83fd; }
+  #upload-status { font-size: 0.8rem; text-align: center; min-height: 18px; }
+  #upload-status.success { color: #4caf50; }
+  #upload-status.error { color: #f44336; }
+  #upload-status.loading { color: #7c83fd; }
+
+  /* MAIN CHAT */
+  #main { flex: 1; display: flex; flex-direction: column; }
+  #chat-header { padding: 16px 24px; border-bottom: 1px solid #1e1e35; background: #13131f; }
+  #chat-header h1 { font-size: 1rem; color: #e0e0e0; }
+  #chat-header p { font-size: 0.78rem; color: #555; margin-top: 2px; }
+  #chat-box { flex: 1; overflow-y: auto; padding: 24px; display: flex; flex-direction: column; gap: 16px; }
+  .msg { max-width: 75%; padding: 13px 16px; border-radius: 14px; line-height: 1.6; font-size: 0.93rem; word-wrap: break-word; }
+  .msg.user { background: #7c83fd; color: white; align-self: flex-end; border-bottom-right-radius: 3px; }
+  .msg.bot { background: #1a1a2e; border: 1px solid #2a2a4a; align-self: flex-start; border-bottom-left-radius: 3px; }
+  .msg.bot .sources { margin-top: 10px; font-size: 0.76rem; color: #666; border-top: 1px solid #2a2a4a; padding-top: 8px; }
+  .msg.bot .sources span { display: block; margin-top: 3px; font-style: italic; }
+  .thinking { color: #555; font-style: italic; }
+  .welcome { text-align: center; color: #444; margin: auto; padding: 40px; }
+  .welcome h2 { font-size: 1.4rem; color: #7c83fd; margin-bottom: 10px; }
+  .welcome p { font-size: 0.9rem; line-height: 1.7; }
+  #input-area { padding: 16px 24px; border-top: 1px solid #1e1e35; background: #13131f; display: flex; gap: 10px; }
+  #question { flex: 1; background: #0f0f1a; border: 1px solid #2a2a4a; color: #e0e0e0; padding: 12px 16px; border-radius: 10px; font-size: 0.93rem; outline: none; resize: none; height: 46px; }
+  #question:focus { border-color: #7c83fd; }
+  #send-btn { background: #7c83fd; color: white; border: none; padding: 12px 20px; border-radius: 10px; cursor: pointer; font-size: 1rem; transition: background 0.2s; }
+  #send-btn:hover { background: #5c63dd; }
+  #send-btn:disabled { background: #333; cursor: not-allowed; }
+</style>
+</head>
+<body>
+
+<div id="sidebar">
+  <h2>📁 DocChat</h2>
+
+  <div id="upload-area" onclick="document.getElementById('file-input').click()">
+    <div style="font-size:2rem">⬆️</div>
+    <p>Click to upload<br>PDF, DOCX, PPTX, TXT</p>
+    <input type="file" id="file-input" accept=".pdf,.txt,.docx,.pptx" multiple onchange="handleFiles(this.files)">
+  </div>
+
+  <div id="upload-status"></div>
+
+  <div id="file-list">
+    <h3>Uploaded Files</h3>
+    <div id="files-container"></div>
+  </div>
+
+  <button id="new-chat-btn" onclick="newSession()">+ New Chat</button>
+</div>
+
+<div id="main">
+  <div id="chat-header">
+    <h1>Chat with your documents</h1>
+    <p id="session-label">No session — upload a file to start</p>
+  </div>
+
+  <div id="chat-box">
+    <div class="welcome">
+      <h2>Welcome to DocChat 👋</h2>
+      <p>Upload a PDF, Word, PowerPoint, or text file<br>then ask anything about it.</p>
+    </div>
+  </div>
+
+  <div id="input-area">
+    <textarea id="question" placeholder="Ask a question about your documents..." onkeydown="handleKey(event)"></textarea>
+    <button id="send-btn" onclick="sendMessage()">➤</button>
+  </div>
+</div>
+
+<script>
+  let sessionId = null;
+  let uploadedFiles = [];
+
+  function fileIcon(name) {
+    const ext = name.split('.').pop().toLowerCase();
+    return { pdf: '📄', docx: '📝', pptx: '📊', txt: '📃' }[ext] || '📁';
+  }
+
+  function setStatus(msg, type) {
+    const el = document.getElementById('upload-status');
+    el.textContent = msg;
+    el.className = type;
+  }
+
+  async function handleFiles(files) {
+    for (const file of files) {
+      await uploadFile(file);
+    }
+  }
+
+  async function uploadFile(file) {
+    setStatus(`Uploading ${file.name}...`, 'loading');
+
+    const formData = new FormData();
+    formData.append('file', file);
+    if (sessionId) formData.append('session_id', sessionId);
+
+    try {
+      const res = await fetch('/upload', { method: 'POST', body: formData });
+      const data = await res.json();
+
+      if (!res.ok) { setStatus(data.detail, 'error'); return; }
+
+      sessionId = data.session_id;
+      uploadedFiles.push(data.filename);
+      renderFiles();
+      setStatus(`✓ ${file.name} indexed!`, 'success');
+      document.getElementById('session-label').textContent = `Session: ${sessionId.substring(0,8)}...`;
+
+      // Clear welcome
+      const welcome = document.querySelector('.welcome');
+      if (welcome) welcome.remove();
+
+    } catch (e) {
+      setStatus('Upload failed', 'error');
+    }
+  }
+
+  function renderFiles() {
+    const container = document.getElementById('files-container');
+    container.innerHTML = uploadedFiles.map(name => `
+      <div class="file-item">
+        <span class="icon">${fileIcon(name)}</span>
+        <span class="name">${name}</span>
+        <span class="status">✓</span>
+      </div>
+    `).join('');
+  }
+
+  function addMsg(text, type, sources = []) {
+    const chatBox = document.getElementById('chat-box');
+    const div = document.createElement('div');
+    div.className = `msg ${type}`;
+    div.innerHTML = text.replace(/\n/g, '<br>');
+    if (sources.length) {
+      const s = document.createElement('div');
+      s.className = 'sources';
+      s.innerHTML = '📄 Sources:<br>' + sources.map(src =>
+        `<span>• ${src.substring(0, 120)}...</span>`).join('');
+      div.appendChild(s);
+    }
+    chatBox.appendChild(div);
+    chatBox.scrollTop = chatBox.scrollHeight;
+    return div;
+  }
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMessage(); }
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById('question');
+    const btn = document.getElementById('send-btn');
+    const question = input.value.trim();
+    if (!question) return;
+    if (!sessionId) { alert('Please upload a file first!'); return; }
+
+    input.value = '';
+    btn.disabled = true;
+    addMsg(question, 'user');
+    const thinking = addMsg('Thinking...', 'bot thinking');
+
+    try {
+      const res = await fetch('/ask', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ question, session_id: sessionId })
+      });
+      const data = await res.json();
+      thinking.remove();
+      addMsg(data.answer, 'bot', data.sources);
+    } catch (e) {
+      thinking.remove();
+      addMsg('Error reaching server.', 'bot');
+    }
+    btn.disabled = false;
+    input.focus();
+  }
+
+  function newSession() {
+    sessionId = null;
+    uploadedFiles = [];
+    renderFiles();
+    setStatus('', '');
+    document.getElementById('chat-box').innerHTML = `
+      <div class="welcome">
+        <h2>Welcome to DocChat 👋</h2>
+        <p>Upload a PDF, Word, PowerPoint, or text file<br>then ask anything about it.</p>
+      </div>`;
+    document.getElementById('session-label').textContent = 'No session — upload a file to start';
+  }
+</script>
+</body>
+</html>
