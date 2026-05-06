@@ -1,6 +1,5 @@
 import os
 import shutil
-from langchain_huggingface import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
 from langchain_groq import ChatGroq
 from langchain_google_genai import ChatGoogleGenerativeAI
@@ -20,12 +19,26 @@ SESSIONS_DIR = "sessions"
 os.makedirs(SESSIONS_DIR, exist_ok=True)
 os.makedirs("uploads", exist_ok=True)
 
-embeddings = HuggingFaceEmbeddings(model_name="all-MiniLM-L6-v2")
+# Lazy globals
+_embeddings = None
+_llms = None
 
-# 3 FREE AI models
-groq_llm = ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY"))
-gemini_llm = ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=os.getenv("GEMINI_API_KEY"))
-cohere_llm = ChatCohere(model="command-r", cohere_api_key=os.getenv("COHERE_API_KEY"))
+def get_embeddings():
+    global _embeddings
+    if _embeddings is None:
+        from langchain_community.embeddings import FastEmbedEmbeddings
+        _embeddings = FastEmbedEmbeddings()
+    return _embeddings
+
+def get_llms():
+    global _llms
+    if _llms is None:
+        _llms = {
+            "groq": ChatGroq(model="llama-3.3-70b-versatile", api_key=os.getenv("GROQ_API_KEY")),
+            "gemini": ChatGoogleGenerativeAI(model="gemini-2.0-flash", google_api_key=os.getenv("GEMINI_API_KEY")),
+            "cohere": ChatCohere(model="command-r", cohere_api_key=os.getenv("COHERE_API_KEY"))
+        }
+    return _llms
 
 INDIVIDUAL_PROMPT = """You are a helpful assistant. Answer the question using the context below.
 Be detailed and accurate.
@@ -36,23 +49,21 @@ Question: {question}
 
 Answer:"""
 
-MERGE_PROMPT = """You are a master summarizer. Below are answers from 3 different AI systems to the same question.
-Combine them into one comprehensive, well-structured answer.
-Remove duplicates. Keep the best insights from each.
-Clearly structure the response.
+MERGE_PROMPT = """You are a master summarizer. Below are answers from 3 different AI systems.
+Combine into one comprehensive, well-structured answer. Remove duplicates. Keep best insights.
 
 Question: {question}
 
-Answer from AI 1 (Llama):
+Answer from Llama:
 {answer1}
 
-Answer from AI 2 (Gemini):
+Answer from Gemini:
 {answer2}
 
-Answer from AI 3 (Cohere):
+Answer from Cohere:
 {answer3}
 
-Combined comprehensive answer:"""
+Combined answer:"""
 
 session_store = {}
 
@@ -62,64 +73,55 @@ def search_web(query: str, max_results: int = 3) -> str:
             results = list(ddgs.text(query, max_results=max_results))
         if not results:
             return ""
-        return "\n\n".join(
-            f"[Web - {r['title']}]\n{r['body']}" for r in results
-        )
+        return "\n\n".join(f"[Web - {r['title']}]\n{r['body']}" for r in results)
     except Exception as e:
         print(f"Web search failed: {e}")
         return ""
 
-def query_single_model(llm, prompt_text: str, question: str, context: str) -> str:
+def query_single_model(llm, question: str, context: str) -> str:
     try:
         prompt = PromptTemplate(
-            template=prompt_text,
+            template=INDIVIDUAL_PROMPT,
             input_variables=["context", "question"]
         )
         chain = prompt | llm | StrOutputParser()
         return chain.invoke({"context": context, "question": question})
     except Exception as e:
-        print(f"Model failed: {e}")
         return f"[Model unavailable: {str(e)[:100]}]"
 
-def query_all_models_parallel(context: str, question: str) -> dict:
-    """Query all 3 models at same time (parallel = faster)"""
+def query_all_models(context: str, question: str) -> dict:
+    llms = get_llms()
     with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
-        future_groq = executor.submit(query_single_model, groq_llm, INDIVIDUAL_PROMPT, question, context)
-        future_gemini = executor.submit(query_single_model, gemini_llm, INDIVIDUAL_PROMPT, question, context)
-        future_cohere = executor.submit(query_single_model, cohere_llm, INDIVIDUAL_PROMPT, question, context)
-
-        answer1 = future_groq.result()
-        answer2 = future_gemini.result()
-        answer3 = future_cohere.result()
-
-    return {"llama": answer1, "gemini": answer2, "cohere": answer3}
+        f1 = executor.submit(query_single_model, llms["groq"], question, context)
+        f2 = executor.submit(query_single_model, llms["gemini"], question, context)
+        f3 = executor.submit(query_single_model, llms["cohere"], question, context)
+        return {"llama": f1.result(), "gemini": f2.result(), "cohere": f3.result()}
 
 def merge_answers(question: str, answers: dict) -> str:
-    """Use Groq to merge all 3 answers into one"""
     try:
+        llms = get_llms()
         prompt = PromptTemplate(
             template=MERGE_PROMPT,
             input_variables=["question", "answer1", "answer2", "answer3"]
         )
-        chain = prompt | groq_llm | StrOutputParser()
+        chain = prompt | llms["groq"] | StrOutputParser()
         return chain.invoke({
             "question": question,
             "answer1": answers["llama"],
             "answer2": answers["gemini"],
             "answer3": answers["cohere"]
         })
-    except Exception as e:
-        # fallback: just return groq answer
+    except Exception:
         return answers["llama"]
 
 def ingest_file(session_id: str, file_path: str):
+    embeddings = get_embeddings()
     text = load_file(file_path)
     splitter = RecursiveCharacterTextSplitter(chunk_size=500, chunk_overlap=50)
     chunks = splitter.split_text(text)
     docs = [Document(page_content=c) for c in chunks]
 
     session_index_path = os.path.join(SESSIONS_DIR, session_id)
-
     if os.path.exists(session_index_path):
         vectorstore = FAISS.load_local(
             session_index_path, embeddings,
@@ -137,6 +139,7 @@ def ingest_file(session_id: str, file_path: str):
     }
 
 def ask(session_id: str, question: str, use_web: bool = True) -> dict:
+    embeddings = get_embeddings()
     doc_context = ""
     sources = []
 
@@ -170,25 +173,18 @@ def ask(session_id: str, question: str, use_web: bool = True) -> dict:
     session_store.setdefault(session_id, {"history": [], "all_chunks": []})
     history = session_store[session_id]["history"]
 
-    # WEB
     web_context = search_web(question) if use_web else ""
 
-    # COMBINE CONTEXT
     context = ""
     if doc_context:
         context += f"=== FROM YOUR UPLOADED DOCUMENTS ===\n{doc_context}\n\n"
     if web_context:
         context += f"=== FROM WEB SEARCH ===\n{web_context}"
     if not context:
-        context = "No document context. Answer from your general knowledge."
+        context = "No document context. Answer from general knowledge."
 
-    # QUERY ALL 3 MODELS IN PARALLEL
-    print(f"Querying 3 AI models for: {question}")
-    answers = query_all_models_parallel(context, question)
-
-    # MERGE INTO ONE ANSWER
+    answers = query_all_models(context, question)
     final_answer = merge_answers(question, answers)
-
     history.append({"q": question, "a": final_answer})
 
     return {
